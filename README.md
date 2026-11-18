@@ -59,9 +59,9 @@ Seed按email、Hive.code、Visit.code及饲料批号自然键只补缺少记录�
 
 Python3.12 / FastAPI / SQLAlchemy / PostgreSQL16 / Redis7 / scikit-learn1.6 / Nginx1.27；前端原生ES modules / HTML / CSS，无框架。
 
-backend/src/models.py定义Hive/Visit/CareAction与账号审计；schemas.py校验输入；yard_service.py处理箱况/巡检/筛查入队；care_service.py负责执行/复查/关闭与跨实体规则；screen_model.py无监督模型；worker.py消费筛查队列与心跳；app.py接口、JWT依赖、timings/recover两中间件；scripts/seed_demo.py幂等seed。
+backend/src/models.py定义Hive/Visit/CareAction/VisitBatch/VisitConflict与账号审计；visit_time.py是采集时刻、当前读数、冲突隔离与箱级串行的共享口径；visit_intake.py处理按批补传、逐条结局与冲突裁决；schemas.py校验输入；yard_service.py处理箱况/巡检/筛查入队；care_service.py负责执行/复查/关闭与跨实体规则；screen_model.py无监督模型；worker.py消费筛查队列与心跳；app.py接口、JWT依赖、timings/recover两中间件；scripts/seed_demo.py幂等seed。
 
-frontend/src/pages/yard.js箱位、visits.js巡箱、screening.js分值与阈值、care.js处置复查；notebook.js是领域状态与最新巡检选择；api.js请求；utils.js转义/数值/上海时间/错误反馈；components/notes.js共享巡检证据、异常依据、标题和状态。巡检证据在箱位与处置页复用，异常依据在筛查与处置关联显示。
+frontend/src/pages/yard.js箱位、visits.js巡箱、screening.js分值与阈值、care.js处置复查、offline.js补传与冲突；notebook.js是领域状态与按采集时刻的当前读数选择；api.js请求；utils.js转义/数值/上海时间/错误反馈；components/notes.js共享巡检证据、异常依据、标题和状态。巡检证据在箱位与处置页复用，异常依据在筛查与处置关联显示。
 
 共享角色、CareKind、CareState、VisitState枚举分别在backend/src/constants.py、frontend/src/constants.js；role与账号一致。审计记录真实操作账号、动作、时间，UI按Asia/Shanghai显示。
 
@@ -100,3 +100,24 @@ Seed增加FD-202611-A可用30kg、FD-HOLD隔离8kg、FD-EXPIRED已过期5kg，�
 GET /moves /insulation-lots /insulation-installs /spring-reviews供三角色；POST /moves、complete/cancel、POST /insulation-lots、POST /insulation-installs、PUT ventilation、POST remove及POST /spring-reviews允许蜂师/主管；move approve、insulation accept、spring pass及物料隔离仅主管，viewer全部只读。各新增模型均有外键；物料数量与春检值域由数据库和Pydantic校验。
 
 Seed只在缺失时增加IN-2026-WINTER 120件，不改人工库存/安装/春检；历史winter_ready无需补装以维持历史状态，新的春检动作才要求保温。真实证据在test-artifacts/gb-1027/v3/。本地检疫留痕不替代行政检疫证；每箱每季一条春检，本演示固定2026越冬季，无跨季归档。
+
+
+## V4 离线补传、晚到读数与采集时刻冲突
+
+新增第十页“补传与冲突”（`pages/offline.js`），原九页与在线巡检口径保留。核心变化：每箱“当前读数”不再按入库先后，而按现场采集时刻 `collected_at` 选取。
+
+**手记与采集时间**：`Visit` 增加 `collected_at`（现场采集时刻，UTC 存储）、`intake_state`（接纳状态）、`prior_status`（冲突隔离前的原状态）、`source_batch_id`（来源批次）。在线巡箱写入当前时刻；升级前的旧手记由启动时补列回填 `collected_at=recorded_at`、`intake_state='accepted'`，仍可查看、筛查与作为处置依据。
+
+**按批补传**：`POST /visits/sync-batches`，body 为 `{client_batch_id, records:[{client_record_id,code,hive_id|hive_code,collected_at,weight_kg,temperature,activity,feed_left,queen_seen,colony_frames}]}`。同一 `client_batch_id` 且内容哈希一致的重试直接返回首次逐条结果（`duplicate:true`），不会重复入库；批次号复用于不同内容返回 409。批内手记编号与巡检编号不得重复。逐条结局为 `accepted / late / deferred / conflict / duplicate / rejected`，分别表示成为当前读数、晚到保留、待闭环接纳、隔离冲突、重试已在库、被拒绝；`GET /visit-batches`、`GET /visit-batches/{client_batch_id}` 回查。
+
+**晚到与陈旧**：采集时刻早于当前读数的记录只保留原值（`late`），不改蜂箱王况/框数，不进入每箱最新筛查，也不能作为建处置依据；更晚采集的读数会取代旧当前读数（旧条目转 `superseded`，不删除）。
+
+**同刻冲突**：同箱同一 `collected_at` 出现不同读数时，参与当前箱况的读数与后到读数一并隔离为 `conflict`，生成唯一 open 的 `VisitConflict` 记录冲突组与各读数快照。未裁决期间该箱暂停新筛查、新建处置、在线登记与箱况编辑，`POST /screening` 自动跳过该箱，其他箱照常。`GET /visit-conflicts`、`GET /visit-conflicts/{id}` 列出，`POST /visit-conflicts/{id}/resolve`（仅主管）选定同箱同刻的一份，须填依据；被选读数恢复为当前/晚到/暂缓，其余转 `conflict_lost` 并保留。重复裁决与跨箱选定均拒绝。
+
+**处置与暂缓**：已建处置关联的原巡检不变，保留原依据。处置进行中补传的新读数标为 `deferred`，不覆盖处置依据、不改王况、不参与筛查；`close` 闭幕后按采集时刻重新接纳（新于当前读数则成当前读数，但不直接改写 `winter_ready` 等越冬状态；与当前同刻同值转 `conflict_lost`，同刻异值转新冲突，早于当前转 `late`），随后才可进入后续筛查。冲突裁决后若有暂缓读数且无活跃处置，同样重新接纳。
+
+**并发**：补传、建处置、关闭、筛查、裁决在 PostgreSQL 下按蜂箱编号升序取事务级咨询锁（`pg_advisory_xact_lock`），同一箱串行、不同箱并行；SQLite 测试/单机场景在事务级串行。并发同批只入库一次，并发异批按采集时刻只留一个当前读数，并发同刻异读只产生一个冲突组。
+
+**页面**：批量录入多条带采集时间的手记、提交后逐条显示结局；冲突卡对照各读数并供主管选定；每条手记可“回查”来源批次、逐条结局、接纳状态与冲突去向。巡箱页显示采集时间与接纳状态；筛查页显示数据时刻，并提示待裁决冲突暂停的箱数。
+
+测试：`cd backend && python -m pytest tests -q`（SQLite，含补传/冲突/处置暂缓/并发）；前端页面冒烟 `cd frontend && NODE_PATH=<jsdom所在目录> node tests/pages.smoke.mjs`。演示用 `V-OFF-*` 之类编号补传即可看到晚到与冲突分支。

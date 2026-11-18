@@ -5,3 +5,18 @@ textarea{font:inherit;color:var(--ink);width:100%;padding:10px;border:1px solid 
 nav{display:flex;flex-wrap:wrap}nav a{flex:1 1 10%;min-width:120px}.checkline{display:flex;gap:8px;align-items:center}.checkline input{width:auto}textarea{width:100%;min-height:70px;padding:10px;background:#fffdf4;border:1px solid #cbbd94;font:inherit}.resource-layout article.sheet{margin-bottom:12px}@media(max-width:600px){nav a{min-width:30%;font-size:12px}}
 
 .resource-layout .lot-grid{grid-template-columns:repeat(3,minmax(0,1fr))}.resource-layout .lot-grid .sheet{padding:16px}.resource-layout .lot-grid h3{font-size:18px}@media(max-width:800px){.resource-layout .lot-grid{grid-template-columns:1fr}}
+
+/* 离线补传与冲突裁决 */
+.offline-row{border:1px solid var(--rule);padding:14px 16px;margin:0 0 14px;background:var(--sheet)}
+.offline-row legend{font:11px 'Space Mono';letter-spacing:1px;color:var(--earth);padding:0 6px}
+.offline-row .two,.offline-row .three{margin-bottom:6px}
+.conflict{border-left:4px solid var(--red)}
+.conflict .badge.screened{border-color:oklch(68% .07 135)}
+.conflict input[type=radio]{width:auto}
+.resolve-form{display:flex;gap:12px;align-items:end;margin-top:14px}
+.resolve-form label{flex:1;margin:0}
+.badge.late{color:var(--red);border-color:oklch(65% .10 35)}
+.badge.deferred{background:var(--wax)}
+.badge.conflict_lost,.badge.superseded{opacity:.75}
+.badge.conflict{border-color:oklch(65% .10 35);color:var(--red)}
+#trace-sheet{margin-top:24px}

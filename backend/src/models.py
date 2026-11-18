@@ -1,5 +1,5 @@
 from datetime import datetime
-from sqlalchemy import String,Float,Boolean,ForeignKey,JSON,CheckConstraint,DateTime,func
+from sqlalchemy import String,Float,Boolean,ForeignKey,JSON,CheckConstraint,DateTime,Index,func
 from sqlalchemy.orm import Mapped,mapped_column
 from .database import Base
 class User(Base):
@@ -35,6 +35,10 @@ class Visit(Base):
     model_evidence:Mapped[dict|None]=mapped_column(JSON,nullable=True)
     status:Mapped[str]=mapped_column(String(30),default='recorded')
     recorded_at:Mapped[datetime]=mapped_column(DateTime,server_default=func.now())
+    collected_at:Mapped[datetime|None]=mapped_column(DateTime,nullable=True,index=True)
+    intake_state:Mapped[str]=mapped_column(String(24),default='accepted',nullable=True)
+    prior_status:Mapped[str|None]=mapped_column(String(30),nullable=True)
+    source_batch_id:Mapped[int|None]=mapped_column(ForeignKey('visit_batches.id'),nullable=True)
 class CareAction(Base):
     __tablename__='care_actions'
     __table_args__=(CheckConstraint('feed_kg>=0 AND feed_kg<=3'),)
@@ -49,6 +53,29 @@ class CareAction(Base):
     followup_frames:Mapped[int|None]=mapped_column(nullable=True)
     executed_at:Mapped[datetime|None]=mapped_column(DateTime,nullable=True)
     closed_at:Mapped[datetime|None]=mapped_column(DateTime,nullable=True)
+class VisitBatch(Base):
+    __tablename__='visit_batches'
+    id:Mapped[int]=mapped_column(primary_key=True)
+    client_batch_id:Mapped[str]=mapped_column(String(80),unique=True)
+    content_hash:Mapped[str]=mapped_column(String(64))
+    hive_ids:Mapped[list|None]=mapped_column(JSON,nullable=True)
+    submitted_by:Mapped[str]=mapped_column(String(120))
+    state:Mapped[str]=mapped_column(String(24),default='applied')
+    results:Mapped[list|None]=mapped_column(JSON,nullable=True)
+    summary:Mapped[dict|None]=mapped_column(JSON,nullable=True)
+    submitted_at:Mapped[datetime]=mapped_column(DateTime,server_default=func.now())
+class VisitConflict(Base):
+    __tablename__='visit_conflicts'
+    __table_args__=(CheckConstraint("state IN ('open','resolved')"),Index('ix_visit_conflicts_open','hive_id','collected_at','state'))
+    id:Mapped[int]=mapped_column(primary_key=True)
+    hive_id:Mapped[int]=mapped_column(ForeignKey('hives.id'))
+    collected_at:Mapped[datetime]=mapped_column(DateTime)
+    state:Mapped[str]=mapped_column(String(24),default='open')
+    readings:Mapped[list|None]=mapped_column(JSON,nullable=True)
+    resolved_visit_id:Mapped[int|None]=mapped_column(ForeignKey('visits.id'),nullable=True)
+    decided_by:Mapped[str]=mapped_column(String(120),default='')
+    decided_at:Mapped[datetime|None]=mapped_column(DateTime,nullable=True)
+    note:Mapped[str]=mapped_column(String(300),default='')
 class Audit(Base):
     __tablename__='audits'
     id:Mapped[int]=mapped_column(primary_key=True)

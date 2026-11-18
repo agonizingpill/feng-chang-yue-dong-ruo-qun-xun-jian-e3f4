@@ -5,7 +5,7 @@ from sqlalchemy import select
 from .database import Session
 from .models import Visit,Hive
 from .screen_model import screen,reference_model
-from .yard_service import latest
+from .visit_time import current_visit
 queue=redis.Redis.from_url(os.getenv('REDIS_URL','redis://redis:6379/0'),decode_responses=True)
 while True:
     Path('/tmp/apiary-heartbeat').touch();job=queue.blpop('apiary:screening',timeout=3)
@@ -16,11 +16,16 @@ while True:
             Path('/tmp/apiary-heartbeat').touch()
             with Session() as db:
                 visit=db.scalar(select(Visit).where(Visit.id==key).with_for_update())
-                if not visit or visit.status!='screening':continue
+                # 筛查期间若该条已被更新采集时间取代或隔离，保留原值不再覆盖。
+                if not visit or visit.status!='screening' or visit.intake_state not in (None,'current','accepted'):continue
+                current=current_visit(db,visit.hive_id,True)
+                if not current or current.id!=visit.id:
+                    visit.status='stale';db.commit();continue
                 score,flag,margin,evidence=screen(visit)
                 visit.anomaly_score=score;visit.anomaly_flag=flag;visit.decision_margin=margin;visit.model_evidence=evidence;visit.status='screened'
                 hive=db.get(Hive,visit.hive_id)
-                if latest(db,hive.id)==visit.id:hive.care_state='needs_care' if flag or not visit.queen_seen else 'observe'
+                if hive.care_state not in ('caring','needs_requeen','spring_rescue','spring_ready'):
+                    hive.care_state='needs_care' if flag or not visit.queen_seen else 'observe'
                 db.commit();points.append({'visit_id':visit.id,'hive_id':hive.id,'score':score,'flag':flag})
         result={'status':'done','count':len(points),'points':points,'evidence':evidence}
         Path('/artifacts').mkdir(exist_ok=True);Path(f"/artifacts/screen-{task['job_id']}.json").write_text(json.dumps(result))

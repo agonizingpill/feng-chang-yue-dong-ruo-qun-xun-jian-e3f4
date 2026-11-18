@@ -3,10 +3,20 @@ from sqlalchemy import select
 from fastapi import HTTPException
 from .models import Hive,Visit,CareAction
 from .yard_service import require,audit,latest
+from .visit_time import (open_conflict,CURRENT,LATE,DEFERRED,CONFLICT,CONFLICT_LOST,PARTICIPATING,
+                         current_visit,effective,reading,apply_current,isolate,promote_deferred,serialize,lock_hive)
 
 def plan(db,body,user):
+    with serialize(db):
+        return _plan(db,body,user)
+
+
+def _plan(db,body,user):
+    visit=require(db,Visit,body.visit_id);lock_hive(db,visit.hive_id)
     visit=require(db,Visit,body.visit_id,True);hive=require(db,Hive,visit.hive_id,True)
-    if latest(db,hive.id)!=visit.id:raise HTTPException(409,'请基于该箱最新巡检建立处置')
+    if open_conflict(db,hive.id):raise HTTPException(409,'该箱读数冲突待主管裁决，暂停新建处置')
+    if latest(db,hive.id)!=visit.id:raise HTTPException(409,'请基于该箱最新采集时间的巡检建立处置')
+    if visit.intake_state not in (None,*PARTICIPATING):raise HTTPException(409,'晚到、待接纳或冲突隔离读数不能作为当前处置依据')
     if visit.status not in ['screened','needs_requeen']:raise HTTPException(409,'须先完成弱群筛查，或为无王复查建立换王处置')
     if body.feed_kg>3:raise HTTPException(409,'每箱单次饲喂不得超过3kg，请拆分到后续复查计划')
     if body.kind=='feed' and body.feed_kg<=0:raise HTTPException(409,'饲喂量必须大于0')
@@ -42,6 +52,12 @@ def followup(db,key,body,user):
     audit(db,user,f'处置 {key} 复查 {body.followup_weight}kg，见王{body.followup_queen}');db.commit();return action
 
 def close(db,key,user):
+    with serialize(db):
+        return _close(db,key,user)
+
+
+def _close(db,key,user):
+    action=require(db,CareAction,key);visit=require(db,Visit,action.visit_id);lock_hive(db,visit.hive_id)
     action=require(db,CareAction,key,True);visit=require(db,Visit,action.visit_id,True);hive=require(db,Hive,visit.hive_id,True)
     if action.kind=='feed' and (not visit.queen_seen or action.followup_queen is False):raise HTTPException(409,'无王群不能仅用饲喂关闭，请建立换王处置')
     if action.status!='rechecked' or action.followup_weight is None:raise HTTPException(409,'缺少执行后复查记录，不能关闭')
@@ -54,4 +70,7 @@ def close(db,key,user):
     if action.followup_weight<visit.weight_kg:raise HTTPException(409,'复查体重仍低于巡检，请继续排查越冬风险')
     action.status='closed';action.closed_at=datetime.utcnow();visit.status='closed';hive.care_state='winter_ready'
     for old in db.scalars(select(Visit).where(Visit.hive_id==hive.id,Visit.id!=visit.id,Visit.status.in_(['recorded','screened','blocked']))).all():old.status='stale'
+    # 处置周期内补传的新读数在闭幕后按采集时间重新接纳，才参与后续筛查。
+    for pending,outcome in promote_deferred(db,hive,user.email):
+        audit(db,user,f'处置闭幕后接纳补传读数 {pending.code}：{outcome}')
     audit(db,user,f'关闭处置 {key}，{hive.code}越冬复查通过');db.commit();return action
